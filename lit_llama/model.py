@@ -15,6 +15,8 @@ from typing_extensions import Self
 from lit_llama.utils import find_multiple
 
 from transformer_engine.pytorch import TransformerLayer
+import transformer_engine.pytorch as te
+from transformer_engine.common.recipe import Format, DelayedScaling
 
 MaskCache = torch.Tensor
 RoPECache = torch.Tensor
@@ -331,9 +333,10 @@ class LLMTransformerEngine(nn.Module):
     the same number of weights. This can be used to roughly estimate the speedup from using
     TransformerEngine.
     """
-    def __init__(self, config: LLaMAConfig):
+    def __init__(self, config: LLaMAConfig, fp8_forward=False):
         super().__init__()
         self.config = config
+        self.fp8_forward = fp8_forward
         self.block_size = config.block_size
         self.vocab_size = config.vocab_size
         self.n_layer = config.n_layer
@@ -344,7 +347,8 @@ class LLMTransformerEngine(nn.Module):
         self.transformer_layers = nn.ModuleList([TransformerLayer(config.n_embd, config.n_embd*4, config.n_head) for _ in range(config.n_layer)])
         self.fc_out = nn.Linear(config.n_embd, config.vocab_size)
 
-    def forward(self, x, max_seq_length=0, input_pos=None):
+    def _forward(self, x, max_seq_length=0, input_pos=None):
+        x = self.pad_to_multiple_of_16(x)
         x = self.embedding(x)
 
         # Create causal attention mask
@@ -357,3 +361,26 @@ class LLMTransformerEngine(nn.Module):
         logits = self.fc_out(x)
 
         return logits
+
+    def forward(self, x, max_seq_length=0, input_pos=None):
+        if self.fp8_forward:
+            fp8_format = Format.HYBRID
+            fp8_recipe = DelayedScaling(fp8_format=fp8_format, amax_history_len=16, amax_compute_algo="max")
+            with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                return self._forward(x, max_seq_length=max_seq_length, input_pos=input_pos)
+        else:
+            return self._forward(x, max_seq_length=max_seq_length, input_pos=input_pos)
+
+
+    def pad_to_multiple_of_16(self, x):
+        batch_size, seq_length = x.size()
+
+        # Calculate padding size for both dimensions
+        batch_pad = (16 - (batch_size % 16)) % 16
+        seq_pad = (16 - (seq_length % 16)) % 16
+
+        # Pad the tensor
+        x = F.pad(x, (0, seq_pad, 0, batch_pad))
+
+        return x
+
