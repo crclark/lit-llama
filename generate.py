@@ -98,6 +98,7 @@ def main(
     temperature: float = 0.8,
     checkpoint_path: Path = Path("checkpoints/lit-llama/7B/lit-llama.pth"),
     tokenizer_path: Path = Path("checkpoints/lit-llama/tokenizer.model"),
+    precision: str = 'bf16-mixed',
     quantize: Optional[str] = None,
 ) -> None:
     """Generates text samples based on a pre-trained LLaMA model and tokenizer.
@@ -118,16 +119,15 @@ def main(
     assert checkpoint_path.is_file(), checkpoint_path
     assert tokenizer_path.is_file(), tokenizer_path
 
-    precision = "bf16-true" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "32-true"
-    fabric = L.Fabric(devices=1, precision=precision)
+    fabric = L.Fabric(accelerator='cuda', devices=1, precision=precision)
+    fabric.launch()
 
     print("Loading model ...", file=sys.stderr)
     t0 = time.time()
     with lazy_load(checkpoint_path) as checkpoint:
         name = llama_model_lookup(checkpoint)
 
-        with fabric.init_module(empty_init=True), quantization(mode=quantize):
-            model = LLaMA.from_name(name)
+        model = LLaMA.from_name(name)
 
         model.load_state_dict(checkpoint)
     print(f"Time to load model: {time.time() - t0:.02f} seconds.", file=sys.stderr)
@@ -159,12 +159,12 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
     warnings.filterwarnings(
         # Triggered internally at ../aten/src/ATen/EmptyTensor.cpp:31
-        "ignore", 
+        "ignore",
         message="ComplexHalf support is experimental and many operators don't support it yet"
     )
     warnings.filterwarnings(
         # Triggered in bitsandbytes/autograd/_functions.py:298
-        "ignore", 
+        "ignore",
         message="MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization",
     )
     CLI(main)
