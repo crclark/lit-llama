@@ -14,6 +14,7 @@ from typing_extensions import Self
 
 from lit_llama.utils import find_multiple
 
+from transformer_engine.pytorch import TransformerLayer
 
 MaskCache = torch.Tensor
 RoPECache = torch.Tensor
@@ -322,3 +323,37 @@ def apply_rope(x: torch.Tensor, rope_cache: RoPECache) -> torch.Tensor:
 
     x_out2 = x_out2.flatten(3)
     return x_out2.type_as(x)
+
+class LLMTransformerEngine(nn.Module):
+    """
+    Simple causal LLM using TransformerEngine primitives. Not directly comparable
+    to LLaMA above, exactly, but takes the same configuration class and will be roughly
+    the same number of weights. This can be used to roughly estimate the speedup from using
+    TransformerEngine.
+    """
+    def __init__(self, config: LLaMAConfig):
+        super().__init__()
+        self.config = config
+        self.block_size = config.block_size
+        self.vocab_size = config.vocab_size
+        self.n_layer = config.n_layer
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+
+        self.embedding = nn.Embedding(config.vocab_size, config.n_embd)
+        self.transformer_layers = nn.ModuleList([TransformerLayer(config.n_embd, config.n_embd*4, config.n_head) for _ in range(config.n_layer)])
+        self.fc_out = nn.Linear(config.n_embd, config.vocab_size)
+
+    def forward(self, x, max_seq_length=0, input_pos=None):
+        x = self.embedding(x)
+
+        # Create causal attention mask
+        mask = (torch.triu(torch.ones(self.block_size, self.block_size)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+
+        for i in range(self.n_layer):
+            x = self.transformer_layers[i](x, mask)
+
+        logits = self.fc_out(x)
+
+        return logits
