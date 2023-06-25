@@ -190,7 +190,6 @@ class CausalSelfAttention(nn.Module):
         kv_cache: Optional[KVCache] = None,
     ) -> Tuple[torch.Tensor, Optional[KVCache]]:
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
-
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
 
@@ -214,6 +213,10 @@ class CausalSelfAttention(nn.Module):
                 # shift 1 position to the left
                 cache_k = torch.roll(cache_k, -1, dims=2)
                 cache_v = torch.roll(cache_v, -1, dims=2)
+            if k.dtype != cache_k.dtype:
+                cache_k = cache_k.to(dtype=k.dtype)
+            if v.dtype != cache_v.dtype:
+                cache_v = cache_v.to(dtype=v.dtype)
             k = cache_k.index_copy(2, input_pos, k)
             v = cache_v.index_copy(2, input_pos, v)
             kv_cache = k, v
